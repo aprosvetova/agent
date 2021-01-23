@@ -14,18 +14,18 @@ const (
 	serviceNameLabel = "com.docker.swarm.service.name"
 )
 
-// InfoService is a service used to retrieve information from a Docker environment
+// DockerInfoService is a service used to retrieve information from a Docker environment
 // using the Docker library.
 type InfoService struct{}
 
-// NewInfoService returns a pointer to an instance of InfoService
+// NewInfoService returns a pointer to an instance of DockerInfoService
 func NewInfoService() *InfoService {
 	return &InfoService{}
 }
 
-// GetInformationFromDockerEngine retrieves information from a Docker environment
+// GetRuntimeConfigurationFromDockerEngine retrieves information from a Docker environment
 // and returns a map of labels.
-func (service *InfoService) GetInformationFromDockerEngine() (map[string]string, error) {
+func (service *InfoService) GetRuntimeConfigurationFromDockerEngine() (*agent.RuntimeConfiguration, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithVersion(agent.SupportedDockerAPIVersion))
 	if err != nil {
 		return nil, err
@@ -37,20 +37,23 @@ func (service *InfoService) GetInformationFromDockerEngine() (map[string]string,
 		return nil, err
 	}
 
-	info := make(map[string]string)
-	info[agent.MemberTagKeyNodeName] = dockerInfo.Name
-
-	if dockerInfo.Swarm.NodeID == "" {
-		info[agent.MemberTagEngineStatus] = "standalone"
-	} else {
-		info[agent.MemberTagEngineStatus] = "swarm"
-		info[agent.MemberTagKeyNodeRole] = agent.NodeRoleWorker
-		if dockerInfo.Swarm.ControlAvailable {
-			info[agent.MemberTagKeyNodeRole] = agent.NodeRoleManager
-		}
+	runtimeConfiguration := &agent.RuntimeConfiguration{
+		NodeName:            dockerInfo.Name,
+		DockerConfiguration: agent.DockerRuntimeConfiguration{},
 	}
 
-	return info, nil
+	if dockerInfo.Swarm.NodeID == "" {
+		getStandaloneConfiguration(runtimeConfiguration)
+	} else {
+
+		err := getSwarmConfiguration(runtimeConfiguration, dockerInfo, cli)
+		if err != nil {
+			return nil, err
+		}
+
+	}
+
+	return runtimeConfiguration, nil
 }
 
 // GetContainerIpFromDockerEngine is used to retrieve the IP address of the container through Docker.
@@ -108,4 +111,28 @@ func (service *InfoService) GetServiceNameFromDockerEngine(containerName string)
 	}
 
 	return containerInspect.Config.Labels[serviceNameLabel], nil
+}
+
+func getStandaloneConfiguration(config *agent.RuntimeConfiguration) {
+	config.DockerConfiguration.EngineStatus = agent.EngineStatusStandalone
+}
+
+func getSwarmConfiguration(config *agent.RuntimeConfiguration, dockerInfo types.Info, cli *client.Client) error {
+	config.DockerConfiguration.EngineStatus = agent.EngineStatusSwarm
+	config.DockerConfiguration.NodeRole = agent.NodeRoleWorker
+
+	if dockerInfo.Swarm.ControlAvailable {
+		config.DockerConfiguration.NodeRole = agent.NodeRoleManager
+
+		node, _, err := cli.NodeInspectWithRaw(context.Background(), dockerInfo.Swarm.NodeID)
+		if err != nil {
+			return err
+		}
+
+		if node.ManagerStatus.Leader {
+			config.DockerConfiguration.Leader = true
+		}
+	}
+
+	return nil
 }

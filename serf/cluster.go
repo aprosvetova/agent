@@ -11,17 +11,31 @@ import (
 	"github.com/portainer/agent"
 )
 
+const (
+	memberTagKeyAgentPort    = "AgentPort"
+	memberTagKeyIsLeader     = "NodeIsLeader"
+	memberTagKeyNodeName     = "NodeName"
+	memberTagKeyNodeRole     = "DockerNodeRole"
+	memberTagKeyEngineStatus = "DockerEngineStatus"
+	memberTagKeyEdgeKeySet   = "EdgeKeySet"
+
+	memberTagValueEngineStatusSwarm      = "swarm"
+	memberTagValueEngineStatusStandalone = "standalone"
+	memberTagValueNodeRoleManager        = "manager"
+	memberTagValueNodeRoleWorker         = "worker"
+)
+
 // ClusterService is a service used to manage cluster related actions such as joining
 // the cluster, retrieving members in the clusters...
 type ClusterService struct {
-	tags    map[string]string
-	cluster *serf.Serf
+	runtimeConfiguration *agent.RuntimeConfiguration
+	cluster              *serf.Serf
 }
 
 // NewClusterService returns a pointer to a ClusterService.
-func NewClusterService(tags map[string]string) *ClusterService {
+func NewClusterService(runtimeConfiguration *agent.RuntimeConfiguration) *ClusterService {
 	return &ClusterService{
-		tags: tags,
+		runtimeConfiguration: runtimeConfiguration,
 	}
 }
 
@@ -42,8 +56,8 @@ func (service *ClusterService) Create(advertiseAddr string, joinAddr []string) e
 
 	conf := serf.DefaultConfig()
 	conf.Init()
-	conf.NodeName = fmt.Sprintf("%s-%s", service.tags[agent.MemberTagKeyNodeName], conf.NodeName)
-	conf.Tags = service.tags
+	conf.NodeName = fmt.Sprintf("%s-%s", service.runtimeConfiguration.NodeName, conf.NodeName)
+	conf.Tags = convertRuntimeConfigurationToTagMap(service.runtimeConfiguration)
 	conf.MemberlistConfig.LogOutput = filter
 	conf.LogOutput = filter
 	conf.MemberlistConfig.AdvertiseAddr = advertiseAddr
@@ -80,13 +94,13 @@ func (service *ClusterService) Members() []agent.ClusterMember {
 		if member.Status == serf.StatusAlive {
 			clusterMember := agent.ClusterMember{
 				IPAddress:  member.Addr.String(),
-				Port:       member.Tags[agent.MemberTagKeyAgentPort],
-				NodeRole:   member.Tags[agent.MemberTagKeyNodeRole],
-				NodeName:   member.Tags[agent.MemberTagKeyNodeName],
+				Port:       member.Tags[memberTagKeyAgentPort],
+				NodeRole:   member.Tags[memberTagKeyNodeRole],
+				NodeName:   member.Tags[memberTagKeyNodeName],
 				EdgeKeySet: false,
 			}
 
-			_, ok := member.Tags[agent.MemberTagEdgeKeySet]
+			_, ok := member.Tags[memberTagKeyEdgeKeySet]
 			if ok {
 				clusterMember.EdgeKeySet = true
 			}
@@ -99,10 +113,16 @@ func (service *ClusterService) Members() []agent.ClusterMember {
 }
 
 // GetMemberByRole will return the first member with the specified role.
-func (service *ClusterService) GetMemberByRole(role string) *agent.ClusterMember {
+func (service *ClusterService) GetMemberByRole(role agent.DockerNodeRole) *agent.ClusterMember {
 	members := service.Members()
+
+	roleString := memberTagValueNodeRoleManager
+	if role == agent.NodeRoleWorker {
+		roleString = memberTagValueNodeRoleWorker
+	}
+
 	for _, member := range members {
-		if member.NodeRole == role {
+		if member.NodeRole == roleString {
 			return &member
 		}
 	}
@@ -134,13 +154,42 @@ func (service *ClusterService) GetMemberWithEdgeKeySet() *agent.ClusterMember {
 	return nil
 }
 
-// UpdateTags propagate the new tags to the cluster
-func (service *ClusterService) UpdateTags(tags map[string]string) error {
-	service.tags = tags
-	return service.cluster.SetTags(tags)
+// UpdateRuntimeConfiguration propagate the new runtimeConfiguration to the cluster
+func (service *ClusterService) UpdateRuntimeConfiguration(runtimeConfiguration *agent.RuntimeConfiguration) error {
+	service.runtimeConfiguration = runtimeConfiguration
+	tagsMap := convertRuntimeConfigurationToTagMap(runtimeConfiguration)
+	return service.cluster.SetTags(tagsMap)
 }
 
-// GetTags returns the tags associated to the service
-func (service *ClusterService) GetTags() map[string]string {
-	return service.tags
+// GetRuntimeConfiguration returns the runtimeConfiguration associated to the service
+func (service *ClusterService) GetRuntimeConfiguration() *agent.RuntimeConfiguration {
+	return service.runtimeConfiguration
+}
+
+func convertRuntimeConfigurationToTagMap(runtimeConfiguration *agent.RuntimeConfiguration) map[string]string {
+	tagsMap := map[string]string{}
+
+	if runtimeConfiguration.EdgeKeySet {
+		tagsMap[memberTagKeyEdgeKeySet] = "set"
+	}
+
+	tagsMap[memberTagKeyEngineStatus] = memberTagValueEngineStatusStandalone
+	if runtimeConfiguration.DockerConfiguration.EngineStatus == agent.EngineStatusSwarm {
+		tagsMap[memberTagKeyEngineStatus] = memberTagValueEngineStatusSwarm
+	}
+
+	tagsMap[memberTagKeyAgentPort] = runtimeConfiguration.AgentPort
+
+	if runtimeConfiguration.DockerConfiguration.Leader {
+		tagsMap[memberTagKeyIsLeader] = "1"
+	}
+
+	tagsMap[memberTagKeyNodeName] = runtimeConfiguration.NodeName
+
+	tagsMap[memberTagKeyNodeRole] = memberTagValueNodeRoleManager
+	if runtimeConfiguration.DockerConfiguration.NodeRole == agent.NodeRoleWorker {
+		tagsMap[memberTagKeyNodeRole] = memberTagValueNodeRoleWorker
+	}
+
+	return tagsMap
 }
