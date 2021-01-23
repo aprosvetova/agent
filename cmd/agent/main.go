@@ -232,11 +232,7 @@ func main() {
 func startAPIServer(config *http.APIServerConfig) error {
 	server := http.NewAPIServer(config)
 
-	if config.EdgeManager.IsEdgeModeEnabled() {
-		return server.StartUnsecured()
-	}
-
-	return server.StartSecured()
+	return server.StartUnsecured()
 }
 
 func parseOptions() (*agent.Options, error) {
